@@ -1,0 +1,14 @@
+{
+  "graphs": {
+    "vibeday": {
+      "path": "./dist/agent/graph.js:graph"
+    }
+  },
+  "env_vars": [
+    "GOOGLE_PLACES_API_KEY",
+    "GOOGLE_ROUTES_API_KEY",
+    "OPENAI_API_KEY",
+    "LANGCHAIN_API_KEY",
+    "LANGCHAIN_PROJECT"
+  ]
+}
