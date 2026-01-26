@@ -1,6 +1,7 @@
 export {
   googlePlacesSearch,
   getCityCenter,
+  geocodeCity,
   buildSearchQuery,
   PlacesSearchInputSchema,
   type PlacesSearchInput,

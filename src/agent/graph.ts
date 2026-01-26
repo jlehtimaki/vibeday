@@ -22,6 +22,7 @@ import type {
 import {
   googlePlacesSearch,
   getCityCenter,
+  geocodeCity,
   buildSearchQuery,
   googlePlaceDetails,
   computeItineraryRoute,
@@ -362,11 +363,15 @@ async function searchActivity(
 
   console.log("[searchActivity] Searching activities in:", city);
 
-  // Get city center coordinates
-  const cityCenter = getCityCenter(city);
+  // Get city center coordinates - try cache first, then geocode
+  let cityCenter = getCityCenter(city);
+  if (!cityCenter) {
+    console.log("[searchActivity] City not in cache, geocoding...");
+    cityCenter = await geocodeCity(city);
+  }
   if (!cityCenter) {
     return {
-      error: `City "${city}" not found in supported cities. Please use a major European city.`,
+      error: `Could not find location for "${city}". Please check the city name.`,
     };
   }
 
@@ -418,8 +423,11 @@ async function searchDinner(
 
   console.log("[searchDinner] Searching dinner in:", city);
 
-  // Get city center coordinates
-  const cityCenter = getCityCenter(city);
+  // Get city center coordinates - try cache first, then geocode
+  let cityCenter = getCityCenter(city);
+  if (!cityCenter) {
+    cityCenter = await geocodeCity(city);
+  }
   if (!cityCenter) {
     return {};
   }
@@ -472,8 +480,11 @@ async function searchFinish(
 
   console.log("[searchFinish] Searching finish venues in:", city);
 
-  // Get city center coordinates
-  const cityCenter = getCityCenter(city);
+  // Get city center coordinates - try cache first, then geocode
+  let cityCenter = getCityCenter(city);
+  if (!cityCenter) {
+    cityCenter = await geocodeCity(city);
+  }
   if (!cityCenter) {
     return {};
   }

@@ -240,8 +240,8 @@ export async function googlePlacesSearch(
   }
 }
 
-// City center coordinates cache (expand as needed)
-const CITY_CENTERS: Record<string, Location> = {
+// City center coordinates cache (for common cities, speeds up requests)
+const CITY_CENTERS_CACHE: Record<string, Location> = {
   barcelona: { lat: 41.3874, lng: 2.1686 },
   madrid: { lat: 40.4168, lng: -3.7038 },
   paris: { lat: 48.8566, lng: 2.3522 },
@@ -259,17 +259,122 @@ const CITY_CENTERS: Record<string, Location> = {
   helsinki: { lat: 60.1699, lng: 24.9384 },
 };
 
+// Runtime cache for geocoded cities
+const geocodeCache: Record<string, Location> = {};
+
 /**
- * Get city center coordinates
- * Returns undefined if city not found (should trigger geocoding or clarification)
+ * Get city center coordinates - first checks cache, then geocodes via Google Places
+ * Returns undefined only if geocoding fails
  */
 export function getCityCenter(city: string): Location | undefined {
   const normalized = city.toLowerCase().trim();
-  return CITY_CENTERS[normalized];
+
+  // Check static cache first
+  if (CITY_CENTERS_CACHE[normalized]) {
+    return CITY_CENTERS_CACHE[normalized];
+  }
+
+  // Check runtime cache
+  if (geocodeCache[normalized]) {
+    return geocodeCache[normalized];
+  }
+
+  return undefined;
+}
+
+/**
+ * Geocode a city name using Google Places API
+ * This is async and should be called when getCityCenter returns undefined
+ */
+export async function geocodeCity(city: string): Promise<Location | undefined> {
+  const normalized = city.toLowerCase().trim();
+
+  // Check caches first
+  if (CITY_CENTERS_CACHE[normalized]) {
+    return CITY_CENTERS_CACHE[normalized];
+  }
+  if (geocodeCache[normalized]) {
+    return geocodeCache[normalized];
+  }
+
+  // Validate API key
+  if (!GOOGLE_PLACES_API_KEY) {
+    console.log("[geocodeCity] No API key");
+    return undefined;
+  }
+
+  console.log("[geocodeCity] Geocoding city:", city);
+
+  try {
+    // Use Places Text Search to find the city
+    const response = await fetch(PLACES_TEXT_SEARCH_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": "places.location,places.displayName",
+      },
+      body: JSON.stringify({
+        textQuery: `${city} city center`,
+        pageSize: 1,
+      }),
+    });
+
+    if (!response.ok) {
+      console.log("[geocodeCity] API error:", response.status);
+      return undefined;
+    }
+
+    const data = await response.json() as GoogleTextSearchResponse;
+
+    if (data.places && data.places.length > 0 && data.places[0]?.location) {
+      const loc = data.places[0].location;
+      const location: Location = {
+        lat: loc.latitude ?? 0,
+        lng: loc.longitude ?? 0,
+      };
+
+      // Cache the result
+      geocodeCache[normalized] = location;
+      console.log("[geocodeCity] Found:", city, "at", location);
+
+      return location;
+    }
+
+    console.log("[geocodeCity] No results for:", city);
+    return undefined;
+  } catch (err) {
+    console.log("[geocodeCity] Error:", err);
+    return undefined;
+  }
+}
+
+// Variety modifiers to make searches more diverse
+const ACTIVITY_MODIFIERS = [
+  "best", "unique", "hidden gem", "local favorite", "popular",
+  "must visit", "top rated", "interesting", "fun"
+];
+
+const RESTAURANT_MODIFIERS = [
+  "best", "local favorite", "authentic", "popular", "cozy",
+  "highly rated", "traditional", "modern"
+];
+
+const FINISH_MODIFIERS = [
+  "best", "cozy", "trendy", "local favorite", "atmospheric",
+  "popular", "relaxed"
+];
+
+// Get a random modifier for variety
+function getRandomModifier(modifiers: string[]): string {
+  // Use time-based seed for some consistency within a session but variety across sessions
+  const index = Math.floor(Date.now() / 60000) % modifiers.length;
+  return modifiers[index] ?? modifiers[0] ?? "";
 }
 
 /**
  * Build search queries for different venue types
+ * Includes variety modifiers for more diverse results
  */
 export function buildSearchQuery(
   category: "activity" | "dinner" | "finish",
@@ -284,21 +389,27 @@ export function buildSearchQuery(
   const isFamily = preferences.familyFriendly === true;
 
   switch (category) {
-    case "activity":
+    case "activity": {
+      const modifier = getRandomModifier(ACTIVITY_MODIFIERS);
       if (isFamily) {
-        return `family friendly kid friendly ${vibeTerms} ${likesTerms} activities things to do in ${city}`.trim();
+        return `${modifier} family friendly kid friendly ${vibeTerms} ${likesTerms} activities attractions things to do in ${city}`.trim();
       }
-      return `${vibeTerms} ${likesTerms} activities things to do in ${city}`.trim();
-    case "dinner":
+      return `${modifier} ${vibeTerms} ${likesTerms} activities attractions experiences in ${city}`.trim();
+    }
+    case "dinner": {
+      const modifier = getRandomModifier(RESTAURANT_MODIFIERS);
       if (isFamily) {
-        return `family friendly ${vibeTerms} ${dietaryTerms} restaurant lunch dinner in ${city}`.trim();
+        return `${modifier} family friendly ${vibeTerms} ${dietaryTerms} restaurant in ${city}`.trim();
       }
-      return `${vibeTerms} ${dietaryTerms} restaurant dinner in ${city}`.trim();
-    case "finish":
+      return `${modifier} ${vibeTerms} ${dietaryTerms} restaurant dinner in ${city}`.trim();
+    }
+    case "finish": {
+      const modifier = getRandomModifier(FINISH_MODIFIERS);
       // Family or no alcohol = cafes and dessert
       if (isFamily || preferences.alcoholOk === false) {
-        return `family friendly ${vibeTerms} cafe dessert ice cream in ${city}`.trim();
+        return `${modifier} ${vibeTerms} cafe dessert coffee shop in ${city}`.trim();
       }
-      return `${vibeTerms} bar cocktail lounge in ${city}`.trim();
+      return `${modifier} ${vibeTerms} bar cocktail wine lounge in ${city}`.trim();
+    }
   }
 }
