@@ -87,31 +87,56 @@ function buildMapsUrl(placeId: string, location?: Location): string {
 }
 
 // Infer category from Google place types
+// Priority: activity types first (so golf courses don't become "dinner" just because they have a restaurant)
 function inferCategory(types?: string[]): string {
   if (!types || types.length === 0) return "other";
 
-  const categoryMap: Record<string, string> = {
-    restaurant: "dinner",
-    food: "dinner",
-    bar: "drinks",
-    night_club: "drinks",
-    cafe: "drinks",
-    bakery: "dessert",
-    ice_cream_shop: "dessert",
-    museum: "activity",
-    art_gallery: "activity",
-    movie_theater: "activity",
-    bowling_alley: "activity",
-    amusement_park: "activity",
-    park: "scenic",
-    viewpoint: "scenic",
-    tourist_attraction: "activity",
-  };
+  // Activity types - check these FIRST (high priority)
+  const activityTypes = new Set([
+    "golf_course",
+    "stadium",
+    "gym",
+    "spa",
+    "museum",
+    "art_gallery",
+    "movie_theater",
+    "bowling_alley",
+    "amusement_park",
+    "zoo",
+    "aquarium",
+    "casino",
+    "tourist_attraction",
+    "point_of_interest",
+    "establishment",
+  ]);
 
+  // Scenic types
+  const scenicTypes = new Set(["park", "viewpoint", "natural_feature"]);
+
+  // Drinks types
+  const drinksTypes = new Set(["bar", "night_club"]);
+
+  // Dessert types
+  const dessertTypes = new Set(["bakery", "ice_cream_shop"]);
+
+  // Food types - check these LAST (low priority)
+  const foodTypes = new Set(["restaurant", "food", "cafe", "meal_takeaway"]);
+
+  // Check in priority order: activity > scenic > drinks > dessert > food
   for (const type of types) {
-    if (categoryMap[type]) {
-      return categoryMap[type];
-    }
+    if (activityTypes.has(type)) return "activity";
+  }
+  for (const type of types) {
+    if (scenicTypes.has(type)) return "scenic";
+  }
+  for (const type of types) {
+    if (drinksTypes.has(type)) return "drinks";
+  }
+  for (const type of types) {
+    if (dessertTypes.has(type)) return "dessert";
+  }
+  for (const type of types) {
+    if (foodTypes.has(type)) return "dinner";
   }
 
   return "activity"; // Default to activity

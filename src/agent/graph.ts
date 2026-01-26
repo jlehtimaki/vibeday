@@ -451,12 +451,16 @@ async function searchActivity(
 
   console.log("[searchActivity] Found", result.venues.length, "venues");
 
+  // Override category to "activity" since that's what we searched for
+  // (Google might return a golf resort as "restaurant" due to its restaurant)
+  const activityVenues = result.venues.map((v) => ({ ...v, category: "activity" }));
+
   // Update state with results (track calls for cost reporting)
   const pools = state.candidatePools ?? DEFAULT_CANDIDATE_POOLS;
   return {
     candidatePools: {
       ...pools,
-      activity: result.venues,
+      activity: activityVenues,
     },
     callBudget: {
       ...callBudget,
@@ -517,12 +521,15 @@ async function searchDinner(
 
   console.log("[searchDinner] Found", result.venues.length, "venues");
 
+  // Override category to "dinner" since that's what we searched for
+  const dinnerVenues = result.venues.map((v) => ({ ...v, category: "dinner" }));
+
   // Update state with results (track calls for cost reporting)
   const pools = state.candidatePools ?? DEFAULT_CANDIDATE_POOLS;
   return {
     candidatePools: {
       ...pools,
-      dinner: result.venues,
+      dinner: dinnerVenues,
     },
     callBudget: {
       ...callBudget,
@@ -603,20 +610,17 @@ async function searchFinish(
     console.log("[searchFinish] Error:", result.error);
   }
 
-  // Filter out bars/drinks venues if alcohol is not OK
+  // Override category based on alcohol preference
+  // This ensures finish venues are properly categorized as drinks or dessert
   let venues = result.venues;
   if (preferences.alcoholOk === false || preferences.familyFriendly === true) {
-    venues = venues
-      .filter((v) => v.category !== "drinks")
-      .map((v) => ({
-        ...v,
-        // Re-categorize to dessert for finish venues when no alcohol
-        category: v.category === "drinks" ? "dessert" : v.category,
-      }));
-    console.log(
-      "[searchFinish] Filtered to non-alcohol venues:",
-      venues.length,
-    );
+    // No alcohol - categorize as dessert
+    venues = venues.map((v) => ({ ...v, category: "dessert" }));
+    console.log("[searchFinish] Categorized as dessert (no alcohol)");
+  } else {
+    // Alcohol OK - categorize as drinks
+    venues = venues.map((v) => ({ ...v, category: "drinks" }));
+    console.log("[searchFinish] Categorized as drinks");
   }
 
   console.log("[searchFinish] Found", venues.length, "venues");
@@ -1040,6 +1044,9 @@ function buildPlanFromVenues(
   const labelCounts: Record<string, number> = {};
 
   for (const venue of sortedVenues) {
+    // Get venue name for label and duration logic
+    const venueName = venue.name.toLowerCase();
+
     // Get travel time from previous venue
     let travelFromPrev = 0;
     if (prevVenueId) {
@@ -1064,14 +1071,40 @@ function buildPlanFromVenues(
       Math.round(baseCost * 1.2),
     ];
 
-    // Create unique label - if we've used this category before, add number
-    const baseLabel =
-      venue.category.charAt(0).toUpperCase() + venue.category.slice(1);
-    labelCounts[baseLabel] = (labelCounts[baseLabel] ?? 0) + 1;
-    const label =
-      labelCounts[baseLabel] > 1
-        ? `${baseLabel} ${labelCounts[baseLabel]}`
-        : baseLabel;
+    // Create descriptive label based on venue type
+    let baseLabel: string;
+    if (venue.category === "activity") {
+      // Use specific activity name based on venue
+      if (venueName.includes("golf")) {
+        baseLabel = "Golf";
+      } else if (venueName.includes("spa") || venueName.includes("wellness")) {
+        baseLabel = "Spa";
+      } else if (venueName.includes("museum")) {
+        baseLabel = "Museum";
+      } else if (venueName.includes("gallery")) {
+        baseLabel = "Gallery";
+      } else if (venueName.includes("zoo")) {
+        baseLabel = "Zoo";
+      } else if (venueName.includes("aquarium")) {
+        baseLabel = "Aquarium";
+      } else if (venueName.includes("beach")) {
+        baseLabel = "Beach";
+      } else if (venueName.includes("bowling")) {
+        baseLabel = "Bowling";
+      } else if (venueName.includes("escape")) {
+        baseLabel = "Escape Room";
+      } else if (venueName.includes("park")) {
+        baseLabel = "Park";
+      } else {
+        baseLabel = "Activity";
+      }
+    } else {
+      baseLabel = venue.category.charAt(0).toUpperCase() + venue.category.slice(1);
+    }
+
+    const count = (labelCounts[baseLabel] ?? 0) + 1;
+    labelCounts[baseLabel] = count;
+    const label = count > 1 ? `${baseLabel} ${count}` : baseLabel;
 
     stops.push({
       time: currentTime,
@@ -1086,16 +1119,39 @@ function buildPlanFromVenues(
           : "Standard (confirm hours in Maps)",
     });
 
-    // Add duration at venue
-    const durations: Record<string, number> = {
-      drinks: 45,
-      activity: 90,
-      dinner: 90,
-      dessert: 30,
-      finish: 60,
-      scenic: 30,
-    };
-    currentTime = addMinutes(currentTime, durations[venue.category] ?? 60);
+    // Add duration at venue - estimate based on activity type
+    let duration: number;
+
+    if (venue.category === "activity") {
+      // Check for specific activity types that need more time
+      if (venueName.includes("golf")) {
+        duration = 270; // 4.5 hours for a round of golf
+      } else if (venueName.includes("spa") || venueName.includes("wellness")) {
+        duration = 180; // 3 hours for spa
+      } else if (venueName.includes("museum") || venueName.includes("gallery")) {
+        duration = 120; // 2 hours for museum
+      } else if (venueName.includes("zoo") || venueName.includes("aquarium") || venueName.includes("theme park")) {
+        duration = 180; // 3 hours for zoo/aquarium
+      } else if (venueName.includes("escape") || venueName.includes("bowling")) {
+        duration = 90; // 1.5 hours for escape room/bowling
+      } else if (venueName.includes("beach")) {
+        duration = 180; // 3 hours for beach
+      } else {
+        duration = 120; // 2 hours default for activities
+      }
+    } else {
+      // Standard durations for non-activity categories
+      const durations: Record<string, number> = {
+        drinks: 60,    // 1 hour for drinks
+        dinner: 105,   // 1.75 hours for dinner
+        dessert: 45,   // 45 min for dessert
+        finish: 60,    // 1 hour
+        scenic: 45,    // 45 min for scenic
+      };
+      duration = durations[venue.category] ?? 60;
+    }
+
+    currentTime = addMinutes(currentTime, duration);
     prevVenueId = venue.placeId;
   }
 
