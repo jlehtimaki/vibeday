@@ -1,12 +1,57 @@
 import { ChatOpenAI } from "@langchain/openai";
+import OpenAI from "openai";
 import { z } from "zod";
 
-// Initialize the LLM
+// Simple LLM interface for xAI that doesn't send unsupported parameters
+class XaiLLM {
+  private client: OpenAI;
+  private model: string;
+  private temperature: number;
+
+  constructor(apiKey: string, model: string, temperature: number) {
+    this.client = new OpenAI({
+      apiKey,
+      baseURL: "https://api.x.ai/v1",
+    });
+    this.model = model;
+    this.temperature = temperature;
+  }
+
+  async invoke(messages: Array<{ role: string; content: string }>) {
+    const response = await this.client.chat.completions.create({
+      model: this.model,
+      messages: messages.map((m) => ({
+        role: m.role as "system" | "user" | "assistant",
+        content: m.content,
+      })),
+      temperature: this.temperature,
+    });
+
+    return {
+      content: response.choices[0]?.message?.content ?? "",
+    };
+  }
+}
+
+// Initialize the LLM - uses xAI (Grok) by default, falls back to OpenAI
 export function createLLM() {
-  return new ChatOpenAI({
-    modelName: "gpt-4o",
-    temperature: 0.3, // Lower temperature for more consistent parsing
-  });
+  const xaiKey = process.env.XAI_API_KEY;
+  const openaiKey = process.env.OPENAI_API_KEY;
+
+  if (xaiKey) {
+    // Use xAI (Grok) with custom wrapper to avoid unsupported parameters
+    return new XaiLLM(xaiKey, "grok-4-1-fast-reasoning", 0.3);
+  }
+
+  if (openaiKey) {
+    // Fallback to OpenAI
+    return new ChatOpenAI({
+      modelName: "gpt-4o",
+      temperature: 0.3,
+    });
+  }
+
+  throw new Error("No API key found. Set XAI_API_KEY or OPENAI_API_KEY.");
 }
 
 // Schema for parsed request - extracts ALL information from user's natural language
@@ -33,13 +78,18 @@ export const ParsedRequestSchema = z.object({
     .string()
     .describe("End time in HH:MM format (24-hour)"),
 
+  // SPECIFIC REQUESTED ACTIVITIES - what the user explicitly wants to do
+  requestedActivities: z
+    .array(z.string())
+    .describe("SPECIFIC activities the user explicitly wants to do. E.g., 'play golf', 'visit museum', 'go to beach', 'have dinner', 'get drinks'. Extract the EXACT activities mentioned, not generic interests."),
+
   // Extracted preferences
   vibes: z
     .array(z.string())
     .describe("Vibes/moods extracted (romantic, adventurous, relaxed, fancy, playful, cozy, etc.)"),
   likes: z
     .array(z.string())
-    .describe("Activities/interests mentioned (museums, wine, views, live music, etc.)"),
+    .describe("General interests mentioned (museums, wine, views, live music, etc.)"),
   dietary: z
     .array(z.string())
     .describe("Dietary restrictions mentioned (vegetarian, vegan, gluten-free, etc.)"),
@@ -69,7 +119,15 @@ export const PARSE_SYSTEM_PROMPT = `You are an outing/itinerary planning assista
 
 Today's date is: {{TODAY_DATE}}
 
-Extract these fields from the user's message:
+**MOST IMPORTANT - requestedActivities:**
+Extract the SPECIFIC activities the user explicitly wants to do, in order. Examples:
+- "play golf and have dinner" → ["golf", "dinner"]
+- "visit a museum, then lunch, then shopping" → ["museum", "lunch", "shopping"]
+- "beach day with dinner after" → ["beach", "dinner"]
+- "romantic evening with drinks and dinner" → ["drinks", "dinner"]
+- "take kids to zoo and then ice cream" → ["zoo", "ice cream"]
+
+Do NOT add activities the user didn't ask for. Only extract what they explicitly mention.
 
 **REQUIRED:**
 - city: The city name (Helsinki, Barcelona, Paris, etc.)
@@ -81,7 +139,7 @@ Extract these fields from the user's message:
 
 **PREFERENCES:**
 - vibes: Array of moods (romantic, adventurous, relaxed, fancy, playful, cozy)
-- likes: Array of interests (museums, wine, views, live music, food)
+- likes: Array of general interests
 - dietary: Array of restrictions (vegetarian, vegan, gluten-free)
 - partySize: Number. Default 2 for dates, 3-4 for family
 - familyFriendly: true if family/kids/children mentioned
@@ -89,13 +147,8 @@ Extract these fields from the user's message:
 - indoorsPreferred: true if rain/cold mentioned
 
 **CRITICAL - alcoholOk:**
-Set to FALSE if ANY of these appear:
-- "don't drink", "I don't drink"
-- "no drinks", "no alcohol", "no drinking"
-- "alcohol-free", "sober", "dry"
-- familyFriendly is true
-
-Set to TRUE only if user does NOT mention avoiding alcohol.
+Set to FALSE if: "don't drink", "no drinks", "no alcohol", "sober", or family/kids.
+Set to TRUE otherwise.
 
 Respond with valid JSON only. No explanation needed.`;
 

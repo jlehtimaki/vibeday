@@ -159,6 +159,9 @@ export interface AgentState {
   timezone: string;
   paid: boolean;
 
+  // User's specific requested activities (e.g., ["golf", "dinner"])
+  requestedActivities: string[];
+
   // Processing
   skeleton?: Skeleton;
   candidatePools: CandidatePools;
@@ -209,10 +212,14 @@ export function createInitialState(input: AgentInput): AgentState {
       walking: "medium",
       indoorsPreferred: false,
       likes: [],
+      familyFriendly: false,
     },
     mode: input.mode ?? "standard",
     timezone: input.timezone,
     paid: input.paid,
+
+    // User's specific requested activities - will be populated by agent
+    requestedActivities: [],
 
     // Processing - initialized empty
     candidatePools: {

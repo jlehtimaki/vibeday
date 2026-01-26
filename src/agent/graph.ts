@@ -83,6 +83,9 @@ export const GraphState = Annotation.Root({
   timezone: Annotation<string>(),
   paid: Annotation<boolean>(),
 
+  // User's specific requested activities (e.g., ["golf", "dinner"])
+  requestedActivities: Annotation<string[]>(),
+
   // Processing fields
   skeleton: Annotation<Skeleton | undefined>(),
   candidatePools: Annotation<CandidatePools>(),
@@ -206,6 +209,9 @@ async function initializeState(
     preferences: DEFAULT_PREFERENCES,
     timezone: "UTC",
 
+    // User's specific requested activities - will be populated by intakeParse
+    requestedActivities: [],
+
     // Reset processing fields
     callBudget: { placesSearch: 0, placeDetails: 0, routes: 0 },
     candidatePools: { activity: [], dinner: [], finish: [] },
@@ -232,10 +238,10 @@ async function intakeParse(
     return { error: "No user message provided" };
   }
 
-  // Check if we have OpenAI API key
-  if (!process.env.OPENAI_API_KEY) {
-    console.log("[intakeParse] No OPENAI_API_KEY, cannot parse");
-    return { error: "OpenAI API key not configured" };
+  // Check if we have an LLM API key (xAI or OpenAI)
+  if (!process.env.XAI_API_KEY && !process.env.OPENAI_API_KEY) {
+    console.log("[intakeParse] No XAI_API_KEY or OPENAI_API_KEY, cannot parse");
+    return { error: "LLM API key not configured (set XAI_API_KEY or OPENAI_API_KEY)" };
   }
 
   try {
@@ -288,6 +294,7 @@ async function intakeParse(
     console.log("[intakeParse] Alcohol OK:", result.alcoholOk);
     console.log("[intakeParse] Family friendly:", result.familyFriendly);
     console.log("[intakeParse] Party size:", result.partySize);
+    console.log("[intakeParse] Requested activities:", result.requestedActivities);
 
     // Build preferences from extracted data
     const preferences: Preferences = {
@@ -307,6 +314,7 @@ async function intakeParse(
       timeWindow: `${result.timeWindowStart}-${result.timeWindowEnd}`,
       partySize: result.partySize,
       preferences,
+      requestedActivities: result.requestedActivities ?? [],
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -360,8 +368,10 @@ async function searchActivity(
   const city = state.city ?? "Barcelona";
   const callBudget = state.callBudget ?? DEFAULT_CALL_BUDGET;
   const preferences = state.preferences ?? DEFAULT_PREFERENCES;
+  const requestedActivities = state.requestedActivities ?? [];
 
   console.log("[searchActivity] Searching activities in:", city);
+  console.log("[searchActivity] Requested activities:", requestedActivities);
 
   // Get city center coordinates - try cache first, then geocode
   let cityCenter = getCityCenter(city);
@@ -375,12 +385,53 @@ async function searchActivity(
     };
   }
 
-  // Build search query based on preferences
-  const query = buildSearchQuery("activity", city, {
-    vibe: preferences.vibe,
-    likes: preferences.likes,
-    familyFriendly: preferences.familyFriendly,
-  });
+  // Find the specific activity requested by user (skip dinner/drinks/dessert as those have their own search)
+  const foodRelated = ["dinner", "lunch", "breakfast", "brunch", "drinks", "dessert", "food", "restaurant", "cafe", "bar"];
+  const specificActivity = requestedActivities.find(
+    (a) => !foodRelated.some((f) => a.toLowerCase().includes(f))
+  );
+
+  let query: string;
+  if (specificActivity) {
+    // User requested a specific activity - search for it directly
+    // Map common terms to better search queries
+    const activityMappings: Record<string, string> = {
+      "golf": "golf course golf club",
+      "minigolf": "mini golf putt putt",
+      "bowling": "bowling alley",
+      "museum": "museum gallery",
+      "beach": "beach seaside",
+      "hiking": "hiking trail walking path",
+      "spa": "spa wellness massage",
+      "zoo": "zoo animal park",
+      "aquarium": "aquarium sea life",
+      "theater": "theater theatre show",
+      "cinema": "cinema movie theater",
+      "shopping": "shopping mall shopping center",
+      "park": "park garden",
+    };
+
+    // Check if we have a mapping for this activity
+    const normalizedActivity = specificActivity.toLowerCase();
+    let searchTerm = specificActivity;
+    for (const [key, value] of Object.entries(activityMappings)) {
+      if (normalizedActivity.includes(key)) {
+        searchTerm = value;
+        break;
+      }
+    }
+
+    query = `best ${searchTerm} in ${city}`;
+    console.log("[searchActivity] Using SPECIFIC activity search:", query);
+  } else {
+    // No specific activity requested - use generic search based on preferences
+    query = buildSearchQuery("activity", city, {
+      vibe: preferences.vibe,
+      likes: preferences.likes,
+      familyFriendly: preferences.familyFriendly,
+    });
+    console.log("[searchActivity] Using GENERIC activity search:", query);
+  }
 
   console.log("[searchActivity] Query:", query);
   console.log("[searchActivity] Family friendly:", preferences.familyFriendly);
@@ -420,8 +471,18 @@ async function searchDinner(
   const city = state.city ?? "Barcelona";
   const callBudget = state.callBudget ?? DEFAULT_CALL_BUDGET;
   const preferences = state.preferences ?? DEFAULT_PREFERENCES;
+  const requestedActivities = state.requestedActivities ?? [];
+
+  // Check if dinner/meal was requested
+  const mealRequested = requestedActivities.some((a) => {
+    const lower = a.toLowerCase();
+    return lower.includes("dinner") || lower.includes("lunch") ||
+           lower.includes("food") || lower.includes("restaurant") ||
+           lower.includes("eat") || lower.includes("meal");
+  });
 
   console.log("[searchDinner] Searching dinner in:", city);
+  console.log("[searchDinner] Dinner explicitly requested:", mealRequested);
 
   // Get city center coordinates - try cache first, then geocode
   let cityCenter = getCityCenter(city);
@@ -477,8 +538,37 @@ async function searchFinish(
   const callBudget = state.callBudget ?? DEFAULT_CALL_BUDGET;
   const preferences = state.preferences ?? DEFAULT_PREFERENCES;
   const candidatePools = state.candidatePools ?? DEFAULT_CANDIDATE_POOLS;
+  const requestedActivities = state.requestedActivities ?? [];
+
+  // Check if drinks/dessert was explicitly requested
+  const drinksRequested = requestedActivities.some((a) => {
+    const lower = a.toLowerCase();
+    return lower.includes("drink") || lower.includes("bar") ||
+           lower.includes("cocktail") || lower.includes("wine") ||
+           lower.includes("beer") || lower.includes("pub");
+  });
+  const dessertRequested = requestedActivities.some((a) => {
+    const lower = a.toLowerCase();
+    return lower.includes("dessert") || lower.includes("ice cream") ||
+           lower.includes("gelato") || lower.includes("coffee") ||
+           lower.includes("cafe") || lower.includes("sweet");
+  });
+
+  // If user specified activities and didn't include drinks/dessert, skip this search
+  if (requestedActivities.length > 0 && !drinksRequested && !dessertRequested) {
+    console.log("[searchFinish] User has specific activities but didn't request drinks/dessert - skipping");
+    return {
+      candidatePools: {
+        ...candidatePools,
+        finish: [],
+      },
+      callBudget: callBudget, // Don't increment since we skipped
+    };
+  }
 
   console.log("[searchFinish] Searching finish venues in:", city);
+  console.log("[searchFinish] Drinks requested:", drinksRequested);
+  console.log("[searchFinish] Dessert requested:", dessertRequested);
 
   // Get city center coordinates - try cache first, then geocode
   let cityCenter = getCityCenter(city);
@@ -916,10 +1006,11 @@ function buildPlanFromVenues(
     return true;
   });
 
-  // Sort by category preference but don't rely on exact category names
+  // Sort by category preference - activity first, then dinner, then finish/drinks/dessert
+  // This respects the typical flow: do the activity, then eat, then maybe drinks/dessert
   const categoryOrder = familyFriendly
     ? ["activity", "dinner", "dessert", "scenic", "finish", "drinks"]
-    : ["drinks", "activity", "dinner", "dessert", "finish", "scenic"];
+    : ["activity", "dinner", "drinks", "dessert", "finish", "scenic"];
 
   const sortedVenues = [...uniqueVenues].sort((a, b) => {
     const aIndex = categoryOrder.indexOf(a.category);
@@ -1028,10 +1119,12 @@ async function generateVariants(
   const isFamily = preferences.familyFriendly === true;
   const budget = state.budget?.amount ?? 100;
   const partySize = state.partySize ?? 2;
+  const requestedActivities = state.requestedActivities ?? [];
 
   console.log("[generateVariants] Family friendly:", isFamily);
   console.log("[generateVariants] City:", city);
   console.log("[generateVariants] Budget:", budget, "Party size:", partySize);
+  console.log("[generateVariants] Requested activities:", requestedActivities);
 
   if (selectedVenues.length === 0) {
     console.log("[generateVariants] No selected venues");
@@ -1055,25 +1148,70 @@ async function generateVariants(
 
   console.log("[generateVariants] Available hours:", availableHours);
 
-  // Determine number of activities based on time (more time = more stops)
-  // ~1.5 hours per stop average (including travel)
-  const numActivities = Math.max(1, Math.min(3, Math.floor(availableHours / 2)));
-  console.log("[generateVariants] Target activities:", numActivities);
+  // Determine which categories to include based on requestedActivities
+  const foodRelated = ["dinner", "lunch", "breakfast", "brunch", "food", "restaurant", "eat", "meal"];
+  const drinkRelated = ["drink", "bar", "cocktail", "wine", "beer", "pub"];
+  const dessertRelated = ["dessert", "ice cream", "gelato", "coffee", "cafe", "sweet"];
 
-  // Build extended venue list with multiple activities if time allows
-  const extendedVenues: Venue[] = [...selectedVenues];
-  const extendedIds = new Set(selectedVenues.map(v => v.placeId));
+  const hasMealRequest = requestedActivities.some(a =>
+    foodRelated.some(f => a.toLowerCase().includes(f))
+  );
+  const hasDrinksRequest = requestedActivities.some(a =>
+    drinkRelated.some(d => a.toLowerCase().includes(d))
+  );
+  const hasDessertRequest = requestedActivities.some(a =>
+    dessertRelated.some(d => a.toLowerCase().includes(d))
+  );
+  const hasActivityRequest = requestedActivities.some(a =>
+    !foodRelated.some(f => a.toLowerCase().includes(f)) &&
+    !drinkRelated.some(d => a.toLowerCase().includes(d)) &&
+    !dessertRelated.some(d => a.toLowerCase().includes(d))
+  );
 
-  // Add more activities if we have time
-  if (numActivities > 1 && pools.activity.length > 1) {
-    for (let i = 0; i < numActivities - 1 && i < pools.activity.length; i++) {
-      const extra = pools.activity.find(v => !extendedIds.has(v.placeId));
-      if (extra) {
-        extendedVenues.push(extra);
-        extendedIds.add(extra.placeId);
-      }
+  console.log("[generateVariants] Has activity request:", hasActivityRequest);
+  console.log("[generateVariants] Has meal request:", hasMealRequest);
+  console.log("[generateVariants] Has drinks request:", hasDrinksRequest);
+  console.log("[generateVariants] Has dessert request:", hasDessertRequest);
+
+  // Build the venue list based ONLY on what was requested
+  const extendedVenues: Venue[] = [];
+  const extendedIds = new Set<string>();
+
+  // Add activity venue if requested
+  if (hasActivityRequest && pools.activity.length > 0) {
+    const activityVenue = pools.activity[0];
+    if (activityVenue) {
+      extendedVenues.push(activityVenue);
+      extendedIds.add(activityVenue.placeId);
     }
   }
+
+  // Add dinner venue if requested
+  if (hasMealRequest && pools.dinner.length > 0) {
+    const dinnerVenue = pools.dinner[0];
+    if (dinnerVenue) {
+      extendedVenues.push(dinnerVenue);
+      extendedIds.add(dinnerVenue.placeId);
+    }
+  }
+
+  // Add finish venue if drinks or dessert requested
+  if ((hasDrinksRequest || hasDessertRequest) && pools.finish.length > 0) {
+    const finishVenue = pools.finish[0];
+    if (finishVenue) {
+      extendedVenues.push(finishVenue);
+      extendedIds.add(finishVenue.placeId);
+    }
+  }
+
+  // If no specific requests OR no venues found, fall back to selected venues
+  if (extendedVenues.length === 0) {
+    console.log("[generateVariants] No specific requests or venues - using selected venues");
+    extendedVenues.push(...selectedVenues);
+    selectedVenues.forEach(v => extendedIds.add(v.placeId));
+  }
+
+  console.log("[generateVariants] Extended venues:", extendedVenues.map(v => `${v.name} (${v.category})`));
 
   // Get IDs of venues used in Plan A
   const planAIds = new Set(extendedVenues.map((v) => v.placeId));
